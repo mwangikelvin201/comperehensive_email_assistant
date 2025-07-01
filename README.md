@@ -3,7 +3,7 @@
 ## This is an ongoing comprehensive mail assitant project that uses LangChain, LangGraph,OpenAI and Pinecone for custom data retrieval
 
 ### What it does...
-
+## assistant
 Draft custom company's documents like memos and receive and reply to emails with personalized company's Data
 
 ## Lessons learnt along the process
