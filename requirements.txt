@@ -1,0 +1,61 @@
+# Core AI and LangChain dependencies
+langchain>=0.1.0
+langchain-core>=0.1.0
+langchain-openai>=0.1.0
+langchain-pinecone>=0.1.0
+langgraph>=0.1.0
+
+# OpenAI API
+openai>=1.0.0
+
+# Vector Database and Embeddings
+pinecone-client>=3.0.0
+sentence-transformers>=2.2.0
+
+# HuggingFace transformers and embeddings
+transformers>=4.35.0
+torch>=2.0.0
+
+# Environment management
+python-dotenv>=1.0.0
+
+# Web scraping and HTTP requests
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# Email handling (built-in libraries, but listing for completeness)
+# imaplib - built-in
+# smtplib - built-in  
+# email - built-in
+
+# Date and time handling
+python-dateutil>=2.8.0
+
+# Data manipulation and utilities
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Async support (for potential async operations)
+asyncio-throttle>=1.0.0
+
+# Logging and monitoring
+loguru>=0.7.0
+
+# Type hints support
+typing-extensions>=4.8.0
+
+# Additional utilities
+urllib3>=2.0.0
+certifi>=2023.7.22
+
+# Optional: For better JSON handling
+ujson>=5.8.0
+
+# Optional: For enhanced text processing
+nltk>=3.8.0
+spacy>=3.7.0
+
+# Optional: For async email handling
+aiosmtplib>=3.0.0
+aioimaplib>=1.0.0
