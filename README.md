@@ -23,3 +23,10 @@ The email has to be company related eg " what are the company's policies on cust
 
 When running,it refreshes after 60 seconds(1 minute) and monitors for any new email. It evalautes the nature of the email and if the email is company related, It queries the vector database and replies the email accordingly.
 
+
+
+### Challenging task....
+
+Reduce the api calls by the app to the  llm in order to reduce the overall cost...but maintain the accuracy and the general functionality of the app
+
+
