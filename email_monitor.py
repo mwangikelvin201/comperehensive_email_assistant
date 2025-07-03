@@ -463,7 +463,24 @@ def calculate_importance_score(subject, body):
             matched_keywords.append(keyword)
     
     # Bonus for multiple company-related keywords
-    company_keywords = ['policy', 'policies', 'hr', 'human resources', 'company', 'corporate']
+    company_keywords = ['policy', 'policies', 'hr', 'human resources', 'company', 'corporate', 'procedure', 'procedures', 'guidelines', 'handbook', 'benefits', 'payroll',
+    # HR-related terms
+    "Talent acquisition", "Recruitment", "Employee engagement", "Retention",
+    "Workforce planning", "Onboarding", "Offboarding", "Performance appraisal",
+    "Evaluation", "Professional development", "Upskilling", "Reskilling",
+    "Compensation & Benefits", "Total Rewards", "Employee relations",
+    "Grievances", "Escalations", "Workplace culture", "Inclusion",
+    "Diversity, Equity, Inclusion", "Code of conduct", "Ethics policy",
+    "Leave policy", "PTO", "Disciplinary action", "Corrective measures",
+    
+    # Corporate-related terms
+    "Stakeholders", "Board of Directors", "Executive team", "Leadership team",
+    "Organizational chart", "Org chart", "Divisions", "Departments", "Units",
+    "Subsidiary", "Parent company", "Affiliates", "Partners", "Vendors",
+    "Business units", "Profit centers", "Cost centers", "Corporate governance",
+    "Compliance", "Audit", "Internal audit"
+]
+
     company_matches = sum(1 for kw in company_keywords if kw in text)
     if company_matches > 1:
         score += company_matches * 2
@@ -508,7 +525,12 @@ def should_auto_respond(subject, body):
     trigger_keywords = [
         'policy', 'policies', 'hr', 'human resources', 'company',
         'procedure', 'procedures', 'handbook', 'benefits', 'payroll',
-        'compliance', 'training', 'onboarding'
+        'compliance', 'training', 'onboarding'"Workforce planning", "Onboarding", "Offboarding", "Performance appraisal",
+    "Evaluation", "Professional development", "Upskilling", "Reskilling",
+    "Compensation & Benefits", "Total Rewards", "Employee relations",
+    "Grievances", "Escalations", "Workplace culture", "Inclusion",
+    "Diversity, Equity, Inclusion", "Code of conduct", "Ethics policy",
+    "Leave policy", "PTO", "Disciplinary action", "Corrective measures"
     ]
     
     return any(keyword in text for keyword in trigger_keywords)
@@ -584,7 +606,7 @@ You are an intelligent email assistant for our company's HR department. Use the 
 3. Offers additional assistance if needed
 4. Maintains a helpful, professional tone
 5. Uses proper email format with To:, Subject:, and body
-6. Starts with "To: [sender_email]"...the specific recipient email/name
+6. Starts with "To: name"...the specific recipient name
 7. Ends with "Best regards, HR Team"
 
 **OBSERVATION**: The response should be formatted as a complete email ready to send.
