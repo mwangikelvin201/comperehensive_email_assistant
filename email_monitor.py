@@ -286,7 +286,7 @@ def setup_email_monitoring(check_interval: int = 60) -> str:
     """Setup intelligent email monitoring to automatically read and respond to company-related emails.
     
     Args:
-        check_interval: How often to check for new emails in seconds (default: 60)
+        check_interval: How often to check for new emails in minutes (default: 30)
     """
     global email_monitor_running
     
@@ -446,6 +446,7 @@ def read_ranked_emails(count: int = 10) -> str:
     except Exception as e:
         return f"Error reading emails: {str(e)}"
 
+# Function to calculate importance score based on subject and body
 def calculate_importance_score(subject, body):
     """Calculate importance score based on keywords in subject and body."""
     global IMPORTANCE_KEYWORDS
