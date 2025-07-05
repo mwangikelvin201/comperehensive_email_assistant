@@ -29,4 +29,5 @@ When running,it refreshes after 60 seconds(1 minute) and monitors for any new em
 
 Reduce the api calls by the app to the  llm in order to reduce the overall cost...but maintain the accuracy and the general functionality of the app
 
+#part of the plan
 
