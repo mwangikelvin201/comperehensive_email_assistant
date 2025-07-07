@@ -2,3 +2,8 @@
 *.env
 __pycache__/
 data/
+# Google API credentials and OAuth tokens
+credentials.json
+token.pickle
+
+prompt.txt
