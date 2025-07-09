@@ -315,7 +315,7 @@ HR Team
 
 ## Internal Memo Format Template
 ```
-INTERNAL MEMORANDUM
+INTERNAL MEMORANDUM/MEMO
 
 To: [department/staff]
 From: HR Team  
@@ -329,7 +329,9 @@ HR Team
 ```
 
 ## MANDATORY FORMATTING RULES
-- **NEVER** include placeholder text like "[Your Name]", "[Your Position]", "[Company Name]", "[Contact Information]"
+- **NEVER** include placeholder text like "[Your Name]", "[Your Position]", "[Company Name]", "[Contact Information]","[Employee/Team/Department Name]"
+- **ALWAYS** use actual extracted names or default to "Team" if no specific recipient
+- **ALWAYS** use "To: [extracted_recipient_name]@company.com
 - **ALWAYS** end with "Best regards, HR Team" for both emails and memos
 - **NO CONTACT INFO** at the end - just the HR Team signature
 - **NO PLACEHOLDERS** anywhere in the final document
@@ -340,7 +342,7 @@ HR Team
 ### Length Guidelines
 - **Brief email**: Maximum 30 words
 - **Brief document**: Maximum 100 words  
-- **Standard**: 50-150 words unless specified otherwise
+- **Standard**: 50-100 words unless specified otherwise
 
 ### Smart Defaults
 - **Subject Line**: Extract from user request context, only ask if completely unclear

@@ -1,6 +1,10 @@
 from typing import Annotated, Sequence, TypedDict
 from dotenv import load_dotenv  
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage, SystemMessage
+from langchain_core.messages.base import BaseMessage
+from langchain_core.messages.human import HumanMessage
+from langchain_core.messages.ai import AIMessage
+from langchain_core.messages.tool import ToolMessage
+from langchain_core.messages.system import SystemMessage
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langgraph.graph.message import add_messages
@@ -20,7 +24,7 @@ import imaplib
 import email
 from email.header import decode_header
 import time
-from datetime import datetime, timedelta,timezone
+from datetime import datetime, timedelta, timezone
 import json
 import threading
 from email.utils import parseaddr
@@ -32,6 +36,7 @@ from googleapiclient.discovery import build
 import pickle
 import dateutil.parser
 from dateutil import tz
+import pytz
 
 load_dotenv()
 
@@ -40,6 +45,9 @@ vectorstore = None
 email_monitor_running = False
 processed_emails = set()
 calendar_service = None
+
+# Default timezone - should be configurable
+DEFAULT_TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "UTC")
 
 # Google Calendar API scopes
 SCOPES = ['https://www.googleapis.com/auth/calendar', 
@@ -53,15 +61,15 @@ IMPORTANCE_KEYWORDS = {
     'benefits': 6, 'training': 5, 'question': 3
 }
 
-# Simplified response templates
+# Updated response templates with timezone-aware formatting
 RESPONSE_TEMPLATES = {
     'company_query': """Dear {name},
 
-Thank you for your inquiry. Based on our company policies and procedures, 
+Thank you for your inquiry. Based on our company policies and procedures:
 
 {db_content}
 
-In the case of further enquiries, please don't hesitate to reach out.
+If you have any further questions, please don't hesitate to reach out.
 
 Best regards,
 HR Team""",
@@ -71,8 +79,8 @@ HR Team""",
 Thank you for your meeting request. I'm pleased to confirm:
 
 📅 Date: {date}
-🕐 Time: {time}
-⏱️ Duration: 1 hour
+🕐 Time: {time} ({timezone})
+⏱️ Duration: {duration}
 
 I've sent you a calendar invitation. Please let me know if you need to reschedule.
 
@@ -81,11 +89,27 @@ HR Team""",
     
     'meeting_conflict': """Dear {name},
 
-Thank you for your meeting request. I have the following times available:
+Thank you for your meeting request. Unfortunately, the requested time slot is not available. 
+
+I have the following alternative times available:
 
 {available_times}
 
 Please let me know which time works best for you.
+
+Best regards,
+HR Team""",
+    
+    'meeting_parse_error': """Dear {name},
+
+Thank you for your meeting request. I wasn't able to parse the specific date and time from your email. 
+
+Could you please provide the meeting details in one of these formats:
+- "Meeting on January 15th at 2:00 PM"
+- "Schedule appointment for 01/15/2024 at 14:00"
+- "Book meeting for tomorrow at 9 AM"
+
+I'll be happy to schedule it once I have the specific details.
 
 Best regards,
 HR Team"""
@@ -93,6 +117,13 @@ HR Team"""
 
 # Calendar keywords
 CALENDAR_KEYWORDS = ['meeting', 'appointment', 'schedule', 'calendar', 'book', 'available', 'time']
+
+def get_timezone_obj(timezone_str):
+    """Get timezone object from string."""
+    try:
+        return pytz.timezone(timezone_str)
+    except:
+        return pytz.UTC
 
 def initialize_calendar_api():
     """Initialize Google Calendar API with better error handling."""
@@ -192,11 +223,11 @@ def search_company_db(query: str) -> str:
             return "No detailed information found in company database"
         
         # Combine and limit content
-        combined_content = "\n\n".join(relevant_content[:1])  # Take top 2 results
+        combined_content = "\n\n".join(relevant_content[:2])  # Take top 2 results
         
         # Limit length
-        if len(combined_content) > 800:
-            combined_content = combined_content[:800] + "..."
+        if len(combined_content) > 1000:
+            combined_content = combined_content[:1000] + "..."
         
         return combined_content
         
@@ -204,10 +235,114 @@ def search_company_db(query: str) -> str:
         print(f"❌ Database search error: {e}")
         return "Error accessing company database"
 
+def extract_datetime_from_email(subject, body):
+    """Extract date and time from email content using comprehensive parsing."""
+    text = f"{subject} {body}".lower()
+    
+    # Common date-time patterns
+    patterns = [
+        # Standard formats
+        r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+(?:at\s+)?(\d{1,2}:\d{2}(?:\s*[ap]m)?)',
+        r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+(?:at\s+)?(\d{1,2}\s*[ap]m)',
+        
+        # Natural language patterns
+        r'((?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?)(?:\s+\d{2,4})?\s+(?:at\s+)?(\d{1,2}:\d{2}(?:\s*[ap]m)?|\d{1,2}\s*[ap]m)',
+        r'((?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\s+(?:at\s+)?(\d{1,2}:\d{2}(?:\s*[ap]m)?|\d{1,2}\s*[ap]m)',
+        r'(tomorrow|today|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\s+(?:at\s+)?(\d{1,2}:\d{2}(?:\s*[ap]m)?|\d{1,2}\s*[ap]m)',
+        
+        # Time only patterns (will use current date)
+        r'(?:at\s+)?(\d{1,2}:\d{2}(?:\s*[ap]m)?|\d{1,2}\s*[ap]m)',
+        r'(?:meeting\s+|appointment\s+|schedule\s+)(?:at\s+)?(\d{1,2}:\d{2}(?:\s*[ap]m)?|\d{1,2}\s*[ap]m)',
+    ]
+    
+    for pattern in patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        if matches:
+            try:
+                if len(matches[0]) == 2:  # Date and time
+                    date_str, time_str = matches[0]
+                    return parse_datetime_components(date_str, time_str)
+                else:  # Time only
+                    time_str = matches[0]
+                    return parse_datetime_components("today", time_str)
+            except:
+                continue
+    
+    return None
+
+def parse_datetime_components(date_str, time_str):
+    """Parse date and time components into datetime object."""
+    try:
+        # Get timezone
+        tz_obj = get_timezone_obj(DEFAULT_TIMEZONE)
+        
+        # Parse date
+        if date_str.lower() == "today":
+            base_date = datetime.now(tz_obj).date()
+        elif date_str.lower() == "tomorrow":
+            base_date = (datetime.now(tz_obj) + timedelta(days=1)).date()
+        elif "next" in date_str.lower():
+            # Handle "next monday", etc.
+            weekday = date_str.lower().replace("next ", "")
+            base_date = get_next_weekday(weekday, tz_obj)
+        elif any(month in date_str.lower() for month in ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']):
+            # Natural language date
+            base_date = dateutil.parser.parse(date_str).date()
+        else:
+            # Standard date format
+            base_date = dateutil.parser.parse(date_str).date()
+        
+        # Parse time
+        time_str = time_str.lower().replace(" ", "")
+        
+        if "am" in time_str or "pm" in time_str:
+            # 12-hour format
+            time_part = dateutil.parser.parse(time_str).time()
+        else:
+            # 24-hour format or hour only
+            if ":" in time_str:
+                hour, minute = map(int, time_str.split(":"))
+            else:
+                hour = int(time_str)
+                minute = 0
+            time_part = datetime.min.time().replace(hour=hour, minute=minute)
+        
+        # Combine date and time
+        combined_datetime = datetime.combine(base_date, time_part)
+        
+        # Make timezone aware
+        if combined_datetime.tzinfo is None:
+            combined_datetime = tz_obj.localize(combined_datetime)
+        
+        return combined_datetime
+        
+    except Exception as e:
+        print(f"❌ DateTime parsing error: {e}")
+        return None
+
+def get_next_weekday(weekday_name, tz_obj):
+    """Get the date of the next occurrence of a weekday."""
+    weekdays = {
+        'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
+        'friday': 4, 'saturday': 5, 'sunday': 6
+    }
+    
+    target_weekday = weekdays.get(weekday_name.lower())
+    if target_weekday is None:
+        return None
+    
+    today = datetime.now(tz_obj)
+    days_ahead = target_weekday - today.weekday()
+    
+    if days_ahead <= 0:  # Target day already happened this week
+        days_ahead += 7
+    
+    return (today + timedelta(days=days_ahead)).date()
+
 def is_company_query(subject, body):
     """Check if email is a company policy/procedure query."""
     text = f"{subject} {body}".lower()
-    company_keywords = ['policy', 'procedure', 'hr', 'company', 'benefits', 'handbook', 'guidelines','rules']
+    company_keywords = ['policy', 'procedure', 'hr', 'company', 'benefits', 'handbook', 'guidelines', 'rules']
     return any(keyword in text for keyword in company_keywords)
 
 def is_calendar_request(subject, body):
@@ -224,98 +359,144 @@ def extract_sender_name(sender_email):
         username = email_addr.split('@')[0]
         return username.replace('.', ' ').replace('_', ' ').title()
 
-def check_calendar_availability(days_ahead=7):
-    """Check calendar availability for next few days."""
-    global calendar_service
-    
-    if not calendar_service:
-        return []
-    
-    try:
-        from datetime import timezone
-        now = datetime.now(timezone.utc)
-        time_min = now.isoformat() 
-        time_max = (now + timedelta(days=days_ahead)).isoformat() 
-        
-        events_result = calendar_service.events().list(
-            calendarId='primary',
-            timeMin=time_min,
-            timeMax=time_max,
-            singleEvents=True,
-            orderBy='startTime'
-        ).execute()
-        
-        events = events_result.get('items', [])
-        
-        # Generate available time slots
-        available_times = []
-        for day in range(1, days_ahead + 1):
-            check_date = now + timedelta(days=day)
-            
-            # Check common meeting times
-            for hour in [9, 10, 11, 12, 14, 15, 16]:  # 9am-12am, 2pm-4pm
-                slot_start = check_date.replace(hour=hour, minute=0, second=0, microsecond=0)
-                slot_end = slot_start + timedelta(hours=1)
-                
-                # Check if slot conflicts with existing events
-                has_conflict = False
-                for event in events:
-                    event_start = event['start'].get('dateTime', event['start'].get('date'))
-                    event_end = event['end'].get('dateTime', event['end'].get('date'))
-                    
-                    if 'T' in event_start:
-                        event_start_dt = dateutil.parser.parse(event_start)
-                        event_end_dt = dateutil.parser.parse(event_end)
-                        
-                        # Check for overlap
-                        if (slot_start < event_end_dt and slot_end > event_start_dt):
-                            has_conflict = True
-                            break
-                
-                if not has_conflict:
-                    available_times.append({
-                        'datetime': slot_start,
-                        'formatted': slot_start.strftime('%A, %B %d at %I:%M %p')
-                    })
-                    
-                    if len(available_times) >= 3:  # Return first 3 available slots
-                        break
-            
-            if len(available_times) >= 3:
-                break
-        
-        return available_times
-        
-    except Exception as e:
-        print(f"❌ Calendar availability check failed: {e}")
-        return []
-
-def create_calendar_event_simple(title, start_datetime, attendee_email):
-    """Create a simple calendar event."""
+def check_time_availability(requested_datetime, duration_hours=1):
+    """Check if requested time slot is available."""
     global calendar_service
     
     if not calendar_service:
         return False
     
     try:
-        end_datetime = start_datetime + timedelta(hours=1)
+        # Convert to UTC for API call
+        start_time = requested_datetime.astimezone(pytz.UTC)
+        end_time = start_time + timedelta(hours=duration_hours)
         
+        # Check for existing events
+        events_result = calendar_service.events().list(
+            calendarId='primary',
+            timeMin=start_time.isoformat(),
+            timeMax=end_time.isoformat(),
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        
+        events = events_result.get('items', [])
+        
+        # Check for conflicts
+        for event in events:
+            event_start = event['start'].get('dateTime', event['start'].get('date'))
+            event_end = event['end'].get('dateTime', event['end'].get('date'))
+            
+            if 'T' in event_start:  # DateTime event
+                event_start_dt = dateutil.parser.parse(event_start)
+                event_end_dt = dateutil.parser.parse(event_end)
+                
+                # Check for overlap
+                if (start_time < event_end_dt and end_time > event_start_dt):
+                    return False
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Time availability check failed: {e}")
+        return False
+
+def get_alternative_times(requested_datetime, duration_hours=1, days_ahead=7):
+    """Get alternative time slots near the requested time."""
+    global calendar_service
+    
+    if not calendar_service:
+        return []
+    
+    try:
+        alternative_times = []
+        base_date = requested_datetime.date()
+        requested_time = requested_datetime.time()
+        tz_obj = requested_datetime.tzinfo
+        
+        # Check same day, different times
+        for hour_offset in [-1, 1, -2, 2]:
+            try:
+                new_time = (datetime.combine(base_date, requested_time) + timedelta(hours=hour_offset)).time()
+                new_datetime = datetime.combine(base_date, new_time)
+                new_datetime = tz_obj.localize(new_datetime) if new_datetime.tzinfo is None else new_datetime
+                
+                if new_datetime > datetime.now(tz_obj) and check_time_availability(new_datetime, duration_hours):
+                    alternative_times.append({
+                        'datetime': new_datetime,
+                        'formatted': new_datetime.strftime('%A, %B %d at %I:%M %p %Z')
+                    })
+                    
+                    if len(alternative_times) >= 3:
+                        break
+            except:
+                continue
+        
+        # If not enough alternatives, check next few days at same time
+        if len(alternative_times) < 3:
+            for day_offset in range(1, days_ahead + 1):
+                try:
+                    new_date = base_date + timedelta(days=day_offset)
+                    new_datetime = datetime.combine(new_date, requested_time)
+                    new_datetime = tz_obj.localize(new_datetime) if new_datetime.tzinfo is None else new_datetime
+                    
+                    if check_time_availability(new_datetime, duration_hours):
+                        alternative_times.append({
+                            'datetime': new_datetime,
+                            'formatted': new_datetime.strftime('%A, %B %d at %I:%M %p %Z')
+                        })
+                        
+                        if len(alternative_times) >= 3:
+                            break
+                except:
+                    continue
+        
+        return alternative_times
+        
+    except Exception as e:
+        print(f"❌ Alternative times generation failed: {e}")
+        return []
+
+def create_calendar_event(title, start_datetime, attendee_email, duration_hours=1):
+    """Create a calendar event with proper timezone handling."""
+    global calendar_service
+    
+    if not calendar_service:
+        return False
+    
+    try:
+        # Ensure timezone awareness
+        if start_datetime.tzinfo is None:
+            tz_obj = get_timezone_obj(DEFAULT_TIMEZONE)
+            start_datetime = tz_obj.localize(start_datetime)
+        
+        end_datetime = start_datetime + timedelta(hours=duration_hours)
+        
+        # Create event
         event = {
             'summary': title,
             'start': {
                 'dateTime': start_datetime.isoformat(),
-                'timeZone': 'UTC',
+                'timeZone': str(start_datetime.tzinfo),
             },
             'end': {
                 'dateTime': end_datetime.isoformat(),
-                'timeZone': 'UTC',
+                'timeZone': str(end_datetime.tzinfo),
             },
             'attendees': [{'email': attendee_email}],
+            'reminders': {
+                'useDefault': False,
+                'overrides': [
+                    {'method': 'email', 'minutes': 24 * 60},  # 24 hour reminder
+                    {'method': 'popup', 'minutes': 10},       # 10 minute reminder
+                ],
+            },
         }
         
         created_event = calendar_service.events().insert(
             calendarId='primary',
-            body=event
+            body=event,
+            sendUpdates='all'  # Send invitations to attendees
         ).execute()
         
         print(f"✅ Calendar event created: {created_event.get('id')}")
@@ -353,6 +534,30 @@ def send_email_simple(to_email, subject, body):
     except Exception as e:
         print(f"❌ Email sending failed: {e}")
         return False
+
+def extract_meeting_duration(subject, body):
+    """Extract meeting duration from email content."""
+    text = f"{subject} {body}".lower()
+    
+    # Look for duration patterns
+    duration_patterns = [
+        r'(\d+)\s*hours?',
+        r'(\d+)\s*h\b',
+        r'(\d+)\s*minutes?',
+        r'(\d+)\s*mins?\b',
+        r'(\d+)\s*m\b'
+    ]
+    
+    for pattern in duration_patterns:
+        matches = re.findall(pattern, text)
+        if matches:
+            duration_value = int(matches[0])
+            if 'minute' in pattern or 'min' in pattern or 'm' in pattern:
+                return duration_value / 60  # Convert to hours
+            else:
+                return duration_value
+    
+    return 1  # Default 1 hour
 
 def process_email_smart(mail, email_id):
     """Process email with improved logic."""
@@ -405,61 +610,88 @@ def process_email_smart(mail, email_id):
         print(f"❌ Email processing error: {e}")
 
 def handle_calendar_request(sender_email, sender_name, subject, body):
-    """Handle calendar/meeting requests efficiently."""
+    """Handle calendar/meeting requests with proper time parsing."""
     print("🔄 Processing calendar request...")
     
-    # Check available times
-    available_times = check_calendar_availability()
+    # Extract requested date and time
+    requested_datetime = extract_datetime_from_email(subject, body)
+    duration = extract_meeting_duration(subject, body)
     
-    if not available_times:
-        # No calendar service or no available times
-        response_body = f"""Dear {sender_name},
+    if not requested_datetime:
+        print("❌ Could not parse date/time from email")
+        response_body = RESPONSE_TEMPLATES['meeting_parse_error'].format(name=sender_name)
+        send_email_simple(sender_email, f"Re: {subject}", response_body)
+        return
+    
+    print(f"📅 Requested time: {requested_datetime.strftime('%Y-%m-%d %H:%M %Z')}")
+    print(f"⏱️ Duration: {duration} hours")
+    
+    # Check if requested time is available
+    if check_time_availability(requested_datetime, duration):
+        print("✅ Time slot available")
+        
+        # Create calendar event
+        event_created = create_calendar_event(
+            f"Meeting with {sender_name}",
+            requested_datetime,
+            sender_email,
+            duration
+        )
+        
+        if event_created:
+            # Send confirmation
+            response_body = RESPONSE_TEMPLATES['meeting_confirmation'].format(
+                name=sender_name,
+                date=requested_datetime.strftime('%A, %B %d, %Y'),
+                time=requested_datetime.strftime('%I:%M %p'),
+                timezone=str(requested_datetime.tzinfo),
+                duration=f"{duration} hour{'s' if duration != 1 else ''}"
+            )
+            
+            send_email_simple(sender_email, f"Meeting Confirmed: {subject}", response_body)
+        else:
+            print("❌ Failed to create calendar event")
+            
+    else:
+        print("❌ Time slot not available")
+        
+        # Get alternative times
+        alternative_times = get_alternative_times(requested_datetime, duration)
+        
+        if alternative_times:
+            times_text = "\n".join([f"• {slot['formatted']}" for slot in alternative_times])
+            response_body = RESPONSE_TEMPLATES['meeting_conflict'].format(
+                name=sender_name,
+                available_times=times_text
+            )
+        else:
+            response_body = f"""Dear {sender_name},
 
-Thank you for your meeting request. I'm currently reviewing my schedule and will get back to you within 24 hours with available time slots.
+Thank you for your meeting request. Unfortunately, the requested time slot is not available .
+
+Please suggest a few alternative times that work for you, and I'll be happy to schedule the meeting.
 
 Best regards,
 HR Team"""
         
         send_email_simple(sender_email, f"Re: {subject}", response_body)
-        return
-    
-    # Get first available time
-    first_available = available_times[0]
-    
-    # Create calendar event
-    event_created = create_calendar_event_simple(
-        f"Meeting with {sender_name}",
-        first_available['datetime'],
-        sender_email
-    )
-    
-    if event_created:
-        # Send confirmation
-        response_body = RESPONSE_TEMPLATES['meeting_confirmation'].format(
-            name=sender_name,
-            date=first_available['datetime'].strftime('%A, %B %d, %Y'),
-            time=first_available['datetime'].strftime('%I:%M %p')
-        )
-        
-        send_email_simple(sender_email, f"Meeting Confirmed: {subject}", response_body)
-        
-    else:
-        # Send available times
-        times_text = "\n".join([f"• {slot['formatted']}" for slot in available_times[:3]])
-        
-        response_body = RESPONSE_TEMPLATES['meeting_conflict'].format(
-            name=sender_name,
-            available_times=times_text
-        )
-        
-        send_email_simple(sender_email, f"Re: {subject}", response_body)
 
 def handle_company_query(sender_email, sender_name, subject, body):
-    """Handle company policy/procedure queries."""
+    """Handle company policy/procedure queries with enhanced search."""
     print("🔄 Processing company query...")
     
+    # Create comprehensive search query
+    search_query = f"{subject} {body}".strip()
+    
+    # Remove common email artifacts
+    search_query = re.sub(r'(re:|fwd:|fw:)', '', search_query, flags=re.IGNORECASE)
+    search_query = re.sub(r'dear\s+\w+', '', search_query, flags=re.IGNORECASE)
+    search_query = re.sub(r'best\s+regards.*', '', search_query, flags=re.IGNORECASE)
+    search_query = search_query.strip()
+    
+    print(f"🔍 Search query: {search_query}")
+    
     # Search company database
-    search_query = f"{subject} {body}"
     db_content = search_company_db(search_query)
     
     # Generate response
@@ -494,6 +726,7 @@ def start_email_monitoring(check_interval: int = 60) -> str:
         imap_password = os.getenv("IMAP_PASSWORD")
         
         print(f"📧 Starting email monitoring on {imap_server}...")
+        print(f"🕐 Timezone: {DEFAULT_TIMEZONE}")
         
         while email_monitor_running:
             try:
@@ -528,7 +761,7 @@ def start_email_monitoring(check_interval: int = 60) -> str:
     if calendar_available:
         features.append("Calendar booking")
     
-    return f"✅ Email monitoring started!\n🔧 Features: {', '.join(features)}\n⏱️ Check interval: {check_interval}s"
+    return f"✅ Email monitoring started!\n🔧 Features: {', '.join(features)}\n⏱️ Check interval: {check_interval}s\n🕐 Timezone: {DEFAULT_TIMEZONE}"
 
 @tool
 def stop_email_monitoring() -> str:
@@ -557,7 +790,7 @@ def check_email_status() -> str:
     else:
         features.append("❌ Calendar")
     
-    return f"📊 Email Monitor Status: {status}\n🔧 Features: {', '.join(features)}\n📈 Processed emails: {len(processed_emails)}"
+    return f"📊 Email Monitor Status: {status}\n🔧 Features: {', '.join(features)}\n📈 Processed emails: {len(processed_emails)}\n🕐 Timezone: {DEFAULT_TIMEZONE}"
 
 # Tools list
 tools = [start_email_monitoring, stop_email_monitoring, check_email_status]
@@ -577,28 +810,40 @@ You are an intelligent email assistant that automatically handles:
    - Provide comprehensive, helpful responses
    
 2. **Calendar Requests** - Meeting, appointment, scheduling requests
-   - Check calendar availability
-   - Book meetings automatically
-   - Send confirmations
+   - Parse specific date/time from email content
+   - Check calendar availability for exact requested time
+   - Book meetings with proper timezone handling,use the specific timezone passed in the code
+   - Send confirmations with accurate time information
+                                  
 
 ## 🎯 Core Features:
 - **Auto-categorization** of incoming emails
-- **Smart responses** based on email type
-- **Calendar integration** for seamless booking
+- **Smart datetime parsing** from natural language
+- **Timezone-aware** calendar booking
+- **Conflict detection** and alternative time suggestions
 - **Database search** for company information
+- **Professional response** templates
 
 ## 📋 Available Commands:
 - `start monitoring` - Begin email monitoring
 - `stop monitoring` - Stop email monitoring  
 - `check status` - View monitoring status
 
-## 🔧 Smart Processing:
-- Automatically detects email type
+## 🔧 Enhanced Processing:
+- Automatically detects email type and intent
+- Extracts specific dates/times from email content
+- Respects timezone settings for accurate scheduling
+- Provides alternative times when conflicts exist
 - Searches company database for policy questions
-- Books calendar appointments for meeting requests
 - Sends professional, personalized responses
 
-Ready to assist with intelligent email management!
+## 🕐 Timezone Handling:
+- Uses configurable default timezone
+- Properly converts times for calendar API
+- Displays times in user's local timezone
+- Handles daylight saving time transitions
+
+Ready to assist with intelligent email management with enhanced calendar integration!
 """)
     
     if not state["messages"]:
@@ -656,11 +901,12 @@ app = graph.compile()
 def run_email_assistant():
     """Run the email assistant."""
     print("\n" + "="*60)
-    print("🚀 SMART EMAIL ASSISTANT")
+    print("🚀 SMART EMAIL ASSISTANT v2.0")
     print("="*60)
     print("📧 Automatic Email Processing")
-    print("📅 Calendar Integration")
+    print("📅 Enhanced Calendar Integration")
     print("🏢 Company Database Search")
+    print("🕐 Timezone-Aware Scheduling")
     print("="*60)
     
     # Check requirements
@@ -671,6 +917,7 @@ def run_email_assistant():
     # Show status
     print(f"📊 Company DB: {'✅ Connected' if pinecone_available else '❌ Not available'}")
     print(f"📅 Calendar: {'✅ Connected' if calendar_available else '❌ Not available'}")
+    print(f"🕐 Timezone: {DEFAULT_TIMEZONE}")
     
     try:
         state = {"messages": []}
