@@ -56,16 +56,20 @@ SCOPES = ['https://www.googleapis.com/auth/calendar',
 # Simplified importance keywords
 IMPORTANCE_KEYWORDS = {
     'urgent': 10, 'emergency': 10, 'critical': 10, 'asap': 10,
-    'meeting': 9, 'appointment': 9, 'schedule': 8, 'calendar': 8,
-    'policy': 9, 'hr': 8, 'company': 8, 'procedure': 7,
-    'benefits': 6, 'training': 5, 'question': 3
+    'meeting': 9, 'appointment': 9, 'schedule': 8, 'calendar': 8,'question': 7,
+    'query': 7, 'request': 7, 'follow-up': 6, 'update': 6,
+    'information': 5, 'details': 5,
+    'policy': 9, 'hr': 8, 'company': 8, 'procedure': 7, 'handbook': 7,
+    'guidelines': 6, 'benefits': 6, 'vacation': 6, 'leave': 6, 'sick': 6,
+    'payroll': 6, 'compensation': 6, 'training': 5, 'development':8,
+    'benefits': 6, 'training': 5, 'question': 3 , 'rules': 9
 }
 
 # Updated response templates with timezone-aware formatting
 RESPONSE_TEMPLATES = {
     'company_query': """Dear {name},
 
-Thank you for your inquiry. Based on our company policies and procedures:
+Thank you for your inquiry.
 
 {db_content}
 
@@ -800,12 +804,13 @@ model = ChatOpenAI(model="gpt-4o", temperature=0.3).bind_tools(tools)
 
 def email_agent(state: AgentState) -> AgentState:
     system_prompt = SystemMessage(content="""
-# Smart Email Assistant
 
-You are an intelligent email assistant that automatically handles:
+Instructions:You are an intelligent email assistant that automatically handles answering emails and scheduling meetings with enhanced calendar integration and company database search capabilities:
 
 ## 📧 Email Types:
-1. **Company Queries** - Policy, procedure, HR, benefits questions
+1. **Company Queries** - Policy, procedure, HR, rules, benefits, etc.
+    an example of a company query is:
+   - "What is the company policy on vacation deertion and sick leave?
    - Search company database for relevant information
    - Provide comprehensive, helpful responses
    
@@ -821,7 +826,7 @@ You are an intelligent email assistant that automatically handles:
 - **Smart datetime parsing** from natural language
 - **Timezone-aware** calendar booking
 - **Conflict detection** and alternative time suggestions
-- **Database search** for company information
+- **Comperehensive Database search** for company information
 - **Professional response** templates
 
 ## 📋 Available Commands:
@@ -834,7 +839,7 @@ You are an intelligent email assistant that automatically handles:
 - Extracts specific dates/times from email content
 - Respects timezone settings for accurate scheduling
 - Provides alternative times when conflicts exist
-- Searches company database for policy questions
+- Searches company database for policy questions and anser them in full following email etiquette
 - Sends professional, personalized responses
 
 ## 🕐 Timezone Handling:
