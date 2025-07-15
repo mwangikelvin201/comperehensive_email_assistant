@@ -5,5 +5,5 @@ data/
 # Google API credentials and OAuth tokens
 credentials.json
 token.pickle
-
+/debug.py
 prompt.txt

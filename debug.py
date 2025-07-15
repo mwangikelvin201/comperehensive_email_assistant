@@ -1,28 +1,101 @@
 import os
-from datetime import datetime
+import openai
+import pinecone
 from dotenv import load_dotenv
-import pytz
-
-# Load .env file
+from langchain_pinecone import PineconeVectorStore
+from langchain_community.embeddings import HuggingFaceEmbeddings
+# Load API keys
 load_dotenv()
+openai.api_key = os.getenv("OPENAI_API_KEY")
+api_key = os.getenv("PINECONE_API_KEY")
+pc = pinecone.Pinecone(api_key=api_key)
+index_name = os.getenv("PINECONE_INDEX_NAME")
+index = pc.Index(index_name)
 
-# Get system time
-now = datetime.now()
+def initialize_pinecone():
+    """Initialize Pinecone vector store."""
+    global vectorstore
+    try:
+        print("🔧 Initializing Pinecone...")
+        
+        api_key = os.getenv("PINECONE_API_KEY")
+        if not api_key:
+            print("⚠️ PINECONE_API_KEY not found")
+            return False
+            
+        pc = pinecone.Pinecone(api_key=api_key)
+        index_name = os.getenv("PINECONE_INDEX_NAME", "company-policies")
+        
+        try:
+            indexes = pc.list_indexes()
+            if index_name not in [index.name for index in indexes]:
+                print(f"⚠️ Index '{index_name}' not found")
+                return False
+        except Exception as e:
+            print(f"⚠️ Could not access Pinecone: {e}")
+            return False
+            
+        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        vectorstore = PineconeVectorStore(index_name=index_name, embedding=embeddings)
+        print(f"✅ Pinecone connected: {index_name}")
+        return True
+        
+    except Exception as e:
+        print(f"⚠️ Pinecone initialization failed: {e}")
+        return False
 
-# Get timezone from .env or default to UTC
-DEFAULT_TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "UTC")
-tz_obj = pytz.timezone(DEFAULT_TIMEZONE)
+# Initialize services
+pinecone_available = initialize_pinecone()
 
-# Localize current time
-localized_now = tz_obj.localize(now.replace(tzinfo=None))
-utc_now = datetime.utcnow().replace(tzinfo=pytz.UTC)
+EMAIL_PROMPT_TEMPLATE = """
+You are an AI assistant that drafts professional emails based on internal company knowledge.
 
-print("=" * 40)
-print("🕒 TIME DEBUG TOOL")
-print("=" * 40)
-print(f"System time (naive):        {now}")
-print(f"UTC now:                    {utc_now}")
-print(f"DEFAULT_TIMEZONE (env):     {DEFAULT_TIMEZONE}")
-print(f"Localized time:             {localized_now}")
-print(f"Localized ISO Format:       {localized_now.isoformat()}")
-print("=" * 40)
+Using the context below, write a clear and concise email that addresses the user's intent.
+Ensure proper grammar, a polite tone, and a logical structure.
+
+CONTEXT:
+{context}
+
+USER REQUEST:
+{user_query}
+"""
+
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+from langchain.llms import OpenAI
+from langchain.chains.qa_with_sources import load_qa_with_sources_chain
+
+def query_and_draft_email(user_query: str):
+    if not pinecone_available:
+        return "Pinecone is not initialized."
+
+    # Step 1: Retrieve relevant documents
+    docs = vectorstore.similarity_search(user_query, k=3)
+    context = "\n\n".join([doc.page_content for doc in docs])
+
+    # Step 2: Format prompt
+    prompt = PromptTemplate(
+        input_variables=["context", "user_query"],
+        template=EMAIL_PROMPT_TEMPLATE
+    )
+
+    chain = LLMChain(llm=OpenAI(temperature=0.3), prompt=prompt)
+
+    # Step 3: Run chain and return email
+    response = chain.run({"context": context, "user_query": user_query})
+    return response
+
+
+if __name__ == "__main__":
+    print("📨 Email drafting assistant ready. Type your request or 'exit' to quit.")
+
+    while True:
+        user_query = input("\n📝 Enter your email request: ")
+        if user_query.lower() in ("exit", "quit"):
+            print("👋 Exiting.")
+            break
+
+        email = query_and_draft_email(user_query)
+        print("\n✉️ Generated Email:\n")
+        print(email)
+

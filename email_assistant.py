@@ -240,39 +240,51 @@ def search_company_db(query: str) -> str:
         return "Error accessing company database"
 
 def extract_datetime_from_email(subject, body):
-    """Extract date and time from email content using comprehensive parsing."""
+    """Extract date and time from email content using regex or fallback to GPT if needed."""
     text = f"{subject} {body}".lower()
-    
-    # Common date-time patterns
+
+    # Common regex patterns for date and time
     patterns = [
-        # Standard formats
         r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+(?:at\s+)?(\d{1,2}:\d{2}(?:\s*[ap]m)?)',
         r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+(?:at\s+)?(\d{1,2}\s*[ap]m)',
-        
-        # Natural language patterns
-        r'((?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?)(?:\s+\d{2,4})?\s+(?:at\s+)?(\d{1,2}:\d{2}(?:\s*[ap]m)?|\d{1,2}\s*[ap]m)',
-        r'((?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\s+(?:at\s+)?(\d{1,2}:\d{2}(?:\s*[ap]m)?|\d{1,2}\s*[ap]m)',
-        r'(tomorrow|today|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\s+(?:at\s+)?(\d{1,2}:\d{2}(?:\s*[ap]m)?|\d{1,2}\s*[ap]m)',
-        
-        # Time only patterns (will use current date)
-        r'(?:at\s+)?(\d{1,2}:\d{2}(?:\s*[ap]m)?|\d{1,2}\s*[ap]m)',
-        r'(?:meeting\s+|appointment\s+|schedule\s+)(?:at\s+)?(\d{1,2}:\d{2}(?:\s*[ap]m)?|\d{1,2}\s*[ap]m)',
+        r'((?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?)(?:\s+\d{2,4})?\s+(?:at\s+)?(\d{1,2}(:\d{2})?\s*[ap]m)',
+        r'((?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\s+(?:at\s+)?(\d{1,2}(:\d{2})?\s*[ap]m)',
+        r'(tomorrow|today|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\s+(?:at\s+)?(\d{1,2}(:\d{2})?\s*[ap]m)',
     ]
-    
+
     for pattern in patterns:
         matches = re.findall(pattern, text, re.IGNORECASE)
         if matches:
             try:
-                if len(matches[0]) == 2:  # Date and time
-                    date_str, time_str = matches[0]
+                if isinstance(matches[0], tuple) and len(matches[0]) >= 2:
+                    date_str, time_str = matches[0][:2]
                     return parse_datetime_components(date_str, time_str)
-                else:  # Time only
-                    time_str = matches[0]
-                    return parse_datetime_components("today", time_str)
-            except:
+            except Exception as e:
+                print(f"❌ Regex match failed: {e}")
                 continue
-    
-    return None
+
+    # 🔁 Fallback: Use LLM to parse natural date/time from free-form text
+    try:
+        from langchain_core.messages import SystemMessage, HumanMessage
+        from langchain_openai import ChatOpenAI
+        from dateutil import parser as dt_parser
+
+        print("🧠 Using GPT fallback for datetime parsing...")
+
+        fallback_model = ChatOpenAI(model="gpt-4o", temperature=0.2)
+        llm_response = fallback_model.invoke([
+            SystemMessage(content="Extract a specific meeting date and time from this email. Respond in a format parsable by Python datetime (e.g. 'July 18, 2025 10:00 AM')."),
+            HumanMessage(content=text)
+        ])
+
+        guessed_datetime = dt_parser.parse(llm_response.content)
+        tz_obj = get_timezone_obj(DEFAULT_TIMEZONE)
+        return guessed_datetime.astimezone(tz_obj)
+
+    except Exception as e:
+        print(f"❌ GPT fallback parsing failed: {e}")
+        return None
+
 
 def parse_datetime_components(date_str, time_str):
     """Parse date and time components into datetime object."""
@@ -344,15 +356,127 @@ def get_next_weekday(weekday_name, tz_obj):
     return (today + timedelta(days=days_ahead)).date()
 
 def is_company_query(subject, body):
-    """Check if email is a company policy/procedure query."""
+    """Check if email is a company policy/procedure query with improved precision."""
     text = f"{subject} {body}".lower()
-    company_keywords = ['policy', 'procedure', 'hr', 'company', 'benefits', 'handbook', 'guidelines', 'rules']
-    return any(keyword in text for keyword in company_keywords)
+    
+    # Strong company query indicators
+    strong_company_keywords = [
+        'company policy', 'company policies', 'company procedure', 'company procedures',
+        'hr policy', 'hr policies', 'employee handbook', 'company handbook',
+        'company guidelines', 'company rules', 'policy regarding', 'procedure for',
+        'what is the policy', 'what are the policies', 'clarification on',
+        'guidance on', 'information about', 'details about'
+    ]
+    
+    # Check for strong indicators first
+    for keyword in strong_company_keywords:
+        if keyword in text:
+            return True
+    
+    # Individual company keywords
+    company_keywords = [
+        'policy', 'policies', 'procedure', 'procedures', 'hr', 'human resources',
+        'company', 'benefits', 'handbook', 'guidelines', 'rules', 'regulation',
+        'regulations', 'compliance', 'protocol', 'protocols', 'documentation',
+        'vacation', 'leave', 'sick leave', 'absence', 'desertion', 'timeoff',
+        'payroll', 'compensation', 'salary', 'wage', 'bonus', 'overtime',
+        'training', 'development', 'onboarding', 'termination', 'resignation',
+        'disciplinary', 'performance', 'evaluation', 'review', 'dress code',
+        'workplace', 'safety', 'security', 'confidentiality', 'social media'
+    ]
+    
+    # Question patterns that suggest information seeking
+    question_patterns = [
+        r'what is\s+(?:the\s+)?(?:company\s+)?(?:policy|procedure|rule|guideline)',
+        r'can you (?:please\s+)?(?:clarify|explain|provide|tell)',
+        r'i (?:need|would like|want|require)\s+(?:to\s+)?(?:know|understand|clarify)',
+        r'seeking\s+(?:clarification|information|guidance)',
+        r'help\s+(?:me\s+)?(?:understand|with)',
+        r'what\s+(?:are\s+)?(?:the\s+)?(?:requirements|steps|process)',
+        r'how\s+(?:do\s+)?(?:i|we|does|should)'
+    ]
+    
+    # Check if we have company keywords
+    has_company_keyword = any(keyword in text for keyword in company_keywords)
+    
+    # Check for question patterns
+    has_question_pattern = any(re.search(pattern, text, re.IGNORECASE) for pattern in question_patterns)
+    
+    # Information-seeking language
+    info_seeking_phrases = [
+        'i am writing to', 'i would like to know', 'i need information',
+        'please provide', 'can you help', 'i have a question',
+        'seeking clarification', 'need guidance', 'require information',
+        'would appreciate', 'looking for', 'need to understand'
+    ]
+    
+    has_info_seeking = any(phrase in text for phrase in info_seeking_phrases)
+    
+    # Return True if we have company context AND (question patterns OR info-seeking language)
+    return has_company_keyword and (has_question_pattern or has_info_seeking)
+
 
 def is_calendar_request(subject, body):
-    """Check if email is a calendar/meeting request."""
+    """Check if email is a calendar/meeting request with improved precision."""
     text = f"{subject} {body}".lower()
-    return any(keyword in text for keyword in CALENDAR_KEYWORDS)
+    
+    # Strong calendar indicators (high confidence)
+    strong_calendar_keywords = [
+        'schedule a meeting', 'book a meeting', 'set up a meeting',
+        'meeting request', 'appointment request', 'calendar invitation',
+        'available times', 'time slots', 'book an appointment',
+        'schedule an appointment', 'meeting at', 'appointment at'
+    ]
+    
+    # Check for strong indicators first
+    for keyword in strong_calendar_keywords:
+        if keyword in text:
+            return True
+    
+    # Individual calendar keywords (need more context)
+    calendar_keywords = ['meeting', 'appointment', 'schedule', 'calendar', 'book', 'available', 'time']
+    
+    # Date/time patterns that suggest scheduling
+    datetime_patterns = [
+        r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}',  # Date formats
+        r'\d{1,2}:\d{2}',  # Time formats
+        r'\d{1,2}\s*[ap]m',  # AM/PM
+        r'(monday|tuesday|wednesday|thursday|friday|saturday|sunday)',  # Days
+        r'(tomorrow|today|next week)',  # Relative dates
+        r'(january|february|march|april|may|june|july|august|september|october|november|december)'  # Months
+    ]
+    
+    # Check if we have calendar keywords AND datetime patterns
+    has_calendar_keyword = any(keyword in text for keyword in calendar_keywords)
+    has_datetime_pattern = any(re.search(pattern, text, re.IGNORECASE) for pattern in datetime_patterns)
+    
+    # Only return True if we have both calendar intent AND time references
+    if has_calendar_keyword and has_datetime_pattern:
+        return True
+    
+    # Additional check: explicit scheduling language
+    scheduling_phrases = [
+        'when are you available', 'what time works', 'free time',
+        'schedule time', 'set up time', 'find time', 'meeting time'
+    ]
+    
+    return any(phrase in text for phrase in scheduling_phrases)
+
+
+
+def classify_email_type(subject, body):
+    """Classify email type with priority order and better logic."""
+    # First check for company queries (higher priority for policy questions)
+    if is_company_query(subject, body):
+        return "company_query"
+    
+    # Then check for calendar requests
+    elif is_calendar_request(subject, body):
+        return "calendar_request"
+    
+    # Default to general email
+    else:
+        return "general"
 
 def extract_sender_name(sender_email):
     """Extract clean sender name."""
@@ -509,6 +633,36 @@ def create_calendar_event(title, start_datetime, attendee_email, duration_hours=
     except Exception as e:
         print(f"❌ Calendar event creation failed: {e}")
         return False
+    
+def send_email_html(to_email, subject, html_body):
+    """Send HTML-formatted email."""
+    smtp_server = os.getenv("SMTP_SERVER")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+
+    if not all([smtp_server, smtp_user, smtp_password]):
+        print("❌ SMTP configuration missing")
+        return False
+
+    try:
+        msg = MIMEText(html_body, "html")
+        msg["Subject"] = subject
+        msg["From"] = smtp_user
+        msg["To"] = to_email
+
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(smtp_user, [to_email], msg.as_string())
+
+        print(f"✅ HTML Email sent to {to_email}")
+        return True
+
+    except Exception as e:
+        print(f"❌ HTML Email sending failed: {e}")
+        return False
+
 
 def send_email_simple(to_email, subject, body):
     """Send email with simplified error handling."""
@@ -564,7 +718,7 @@ def extract_meeting_duration(subject, body):
     return 1  # Default 1 hour
 
 def process_email_smart(mail, email_id):
-    """Process email with improved logic."""
+    """Process email with improved classification logic."""
     try:
         status, msg_data = mail.fetch(email_id, '(RFC822)')
         if status != 'OK':
@@ -597,15 +751,18 @@ def process_email_smart(mail, email_id):
         print(f"\n📨 Processing email:")
         print(f"From: {sender_name} <{sender_email}>")
         print(f"Subject: {subject}")
+        print(f"Body preview: {body[:100]}...")  # Debug: show body preview
         
-        # Determine email type and handle accordingly
-        if is_calendar_request(subject, body):
-            print("📅 Detected: Calendar/Meeting request")
-            handle_calendar_request(sender_email, sender_name, subject, body)
-            
-        elif is_company_query(subject, body):
+        # Classify email type using improved logic
+        email_type = classify_email_type(subject, body)
+        
+        if email_type == "company_query":
             print("🏢 Detected: Company query")
             handle_company_query(sender_email, sender_name, subject, body)
+            
+        elif email_type == "calendar_request":
+            print("📅 Detected: Calendar/Meeting request")
+            handle_calendar_request(sender_email, sender_name, subject, body)
             
         else:
             print("📝 Detected: General email (no auto-response)")
@@ -681,30 +838,47 @@ HR Team"""
         send_email_simple(sender_email, f"Re: {subject}", response_body)
 
 def handle_company_query(sender_email, sender_name, subject, body):
-    """Handle company policy/procedure queries with enhanced search."""
+    """Handle company policy/procedure queries using GPT with HTML formatting."""
     print("🔄 Processing company query...")
-    
-    # Create comprehensive search query
-    search_query = f"{subject} {body}".strip()
-    
-    # Remove common email artifacts
-    search_query = re.sub(r'(re:|fwd:|fw:)', '', search_query, flags=re.IGNORECASE)
-    search_query = re.sub(r'dear\s+\w+', '', search_query, flags=re.IGNORECASE)
-    search_query = re.sub(r'best\s+regards.*', '', search_query, flags=re.IGNORECASE)
-    search_query = search_query.strip()
-    
-    print(f"🔍 Search query: {search_query}")
-    
-    # Search company database
-    db_content = search_company_db(search_query)
-    
-    # Generate response
-    response_body = RESPONSE_TEMPLATES['company_query'].format(
-        name=sender_name,
-        db_content=db_content
-    )
-    
-    send_email_simple(sender_email, f"Re: {subject}", response_body)
+
+    # Clean and build search query
+    query = f"{subject} {body}".strip()
+    query = re.sub(r'(re:|fwd:|fw:)', '', query, flags=re.IGNORECASE)
+    query = re.sub(r'dear\s+\w+', '', query, flags=re.IGNORECASE)
+    query = re.sub(r'best\s+regards.*', '', query, flags=re.IGNORECASE)
+
+    # Search Pinecone
+    db_chunks = search_company_db(query)
+
+    # Prompt GPT to write a full HTML email
+    prompt = f"""
+Write a formal, polite company response email in HTML format. It should:
+- Start with a greeting ("Dear {sender_name},")
+- Use the provided company info to answer the question clearly and helpfully
+- End with a courteous sign-off
+- Format the email with HTML tags (e.g., <p>, <strong>, <br>), keeping it clean and readable
+
+Employee Name: {sender_name}
+Query: {query}
+
+Company Info:
+{db_chunks}
+"""
+
+    try:
+        from langchain_core.messages import SystemMessage, HumanMessage
+        response = model.invoke([
+            SystemMessage(content="You are a professional HR assistant who writes clean, formatted HTML emails."),
+            HumanMessage(content=prompt)
+        ])
+        html_body = response.content.strip()
+
+        send_email_html(sender_email, f"Re: {subject}", html_body)
+
+    except Exception as e:
+        print(f"❌ GPT HTML generation failed: {e}")
+        fallback_text = RESPONSE_TEMPLATES['company_query'].format(name=sender_name, db_content=db_chunks)
+        send_email_simple(sender_email, f"Re: {subject}", fallback_text)
 
 @tool
 def start_email_monitoring(check_interval: int = 60) -> str:
@@ -808,11 +982,16 @@ def email_agent(state: AgentState) -> AgentState:
 Instructions:You are an intelligent email assistant that automatically handles answering emails and scheduling meetings with enhanced calendar integration and company database search capabilities:
 
 ## 📧 Email Types:
-1. **Company Queries** - Policy, procedure, HR, rules, benefits, etc.
-    an example of a company query is:
-   - "What is the company policy on vacation deertion and sick leave?
-   - Search company database for relevant information
-   - Provide comprehensive, helpful responses
+   1. You are an AI assistant that drafts professional emails based on internal company knowledge.
+     **Company Queries** - Policy, procedure, HR, rules, benefits, etc.
+    Using the context below, write a clear and concise email that addresses the user's intent.
+    Ensure proper grammar, a polite tone, and a logical structure.
+
+    CONTEXT:
+    {context}
+
+    USER REQUEST:
+    {user_query}
    
 2. **Calendar Requests** - Meeting, appointment, scheduling requests
    - Parse specific date/time from email content
