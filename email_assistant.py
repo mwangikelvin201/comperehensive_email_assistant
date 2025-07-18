@@ -836,29 +836,27 @@ Best regards,
 HR Team"""
         
         send_email_simple(sender_email, f"Re: {subject}", response_body)
-
 def handle_company_query(sender_email, sender_name, subject, body):
-    """Handle company policy/procedure queries using GPT with HTML formatting."""
+    """Handle company queries using GPT with clean, enforced HTML and consistent HR sign-off."""
     print("🔄 Processing company query...")
 
-    # Clean and build search query
+    # Build the search query
     query = f"{subject} {body}".strip()
     query = re.sub(r'(re:|fwd:|fw:)', '', query, flags=re.IGNORECASE)
     query = re.sub(r'dear\s+\w+', '', query, flags=re.IGNORECASE)
     query = re.sub(r'best\s+regards.*', '', query, flags=re.IGNORECASE)
 
-    # Search Pinecone
+    # Search the company knowledge base
     db_chunks = search_company_db(query)
 
-    # Prompt GPT to write a full HTML email
     prompt = f"""
-Write a formal, polite company response email in HTML format. It should:
-- Start with a greeting ("Dear {sender_name},")
-- Use the provided company info to answer the question clearly and helpfully
-- End with a courteous sign-off
-- Format the email with HTML tags (e.g., <p>, <strong>, <br>), keeping it clean and readable
+You are an HR assistant. Write a full response email in **HTML** format with:
+- Greeting: "Dear {sender_name},"
+- Polite, structured answer using the provided company info
+- Closing: "Kind regards,<br>HR Team"
+- Use <p>, <br>, and basic HTML formatting
+DO NOT include any code fences like ``` or placeholder text like [Your Name], [Company Name].
 
-Employee Name: {sender_name}
 Query: {query}
 
 Company Info:
@@ -867,11 +865,28 @@ Company Info:
 
     try:
         from langchain_core.messages import SystemMessage, HumanMessage
+
         response = model.invoke([
-            SystemMessage(content="You are a professional HR assistant who writes clean, formatted HTML emails."),
+            SystemMessage(content="You are a professional HR assistant who writes clean HTML emails."),
             HumanMessage(content=prompt)
         ])
-        html_body = response.content.strip()
+
+        raw_html = response.content.strip()
+
+        # 🧼 Cleanup unwanted formatting
+        raw_html = re.sub(r"^```html\s*", "", raw_html, flags=re.IGNORECASE)  # remove opening code block
+        raw_html = re.sub(r"```$", "", raw_html)  # remove closing code block
+        raw_html = re.sub(r"\[.*?\]", "", raw_html)  # remove placeholders like [Your Name], [Company Name]
+
+        # ✅ Enforce correct sign-off if missing
+        if "hr team" not in raw_html.lower():
+            raw_html += "\n<p>Kind regards,<br>HR Team</p>"
+
+        # ✅ Ensure valid HTML structure
+        if not raw_html.strip().lower().startswith("<html>"):
+            html_body = f"<html><body>{raw_html}</body></html>"
+        else:
+            html_body = raw_html
 
         send_email_html(sender_email, f"Re: {subject}", html_body)
 

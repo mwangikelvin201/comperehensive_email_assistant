@@ -13,7 +13,7 @@ data = load_pdf("/home/kamwas/Documents/email_assistant/data")
 
 # Split the data into chunks
 def splitter(extracted_data):
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size = 600,chunk_overlap = 300)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size =300 )
     text_chunks = text_splitter.split_documents(extracted_data)
     return text_chunks
 
