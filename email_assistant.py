@@ -28,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import threading
 from email.utils import parseaddr
-# Calendar imports
+import ssl
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -37,6 +37,9 @@ import pickle
 import dateutil.parser
 from dateutil import tz
 import pytz
+import html
+import re
+from email_validator import validate_email, EmailNotValidError
 
 load_dotenv()
 
@@ -286,11 +289,104 @@ def extract_datetime_from_email(subject, body):
         return None
 
 
-def parse_datetime_components(date_str, time_str):
-    """Parse date and time components into datetime object."""
+def extract_datetime_from_email(subject, body):
+    """Extract date and time from email content using regex or fallback to GPT if needed."""
+    text = f"{subject} {body}".lower()
+
+    # Common regex patterns for date and time
+    patterns = [
+        r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+(?:at\s+)?(\d{1,2}:\d{2}(?:\s*[ap]m)?)',
+        r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s+(?:at\s+)?(\d{1,2}\s*[ap]m)',
+        r'(\d{1,2}(?:st|nd|rd|th)?\s+(?:january|february|march|april|may|june|july|august|september|october|november|december))\s+(?:at\s+)?(\d{1,2}(:\d{2})?\s*[ap]m)',
+        r'((?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?)(?:\s+\d{2,4})?\s+(?:at\s+)?(\d{1,2}(:\d{2})?\s*[ap]m)',
+        r'((?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\s+(?:at\s+)?(\d{1,2}(:\d{2})?\s*[ap]m)',
+        r'(tomorrow|today|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\s+(?:at\s+)?(\d{1,2}(:\d{2})?\s*[ap]m)',
+    ]
+
+    for pattern in patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        if matches:
+            try:
+                if isinstance(matches[0], tuple) and len(matches[0]) >= 2:
+                    date_str, time_str = matches[0][:2]
+                    return parse_datetime_components(date_str, time_str)
+            except Exception as e:
+                print(f"❌ Regex match failed: {e}")
+                continue
+
+    # 🔁 Fallback: Use LLM to parse natural date/time from free-form text
     try:
-        # Get timezone
+        from langchain_core.messages import SystemMessage, HumanMessage
+        from langchain_openai import ChatOpenAI
+        from dateutil import parser as dt_parser
+        import datetime
+
+        print("🧠 Using GPT fallback for datetime parsing...")
+
+        # Get current date and timezone for context
+        current_date = datetime.datetime.now()
         tz_obj = get_timezone_obj(DEFAULT_TIMEZONE)
+        current_local = current_date.astimezone(tz_obj)
+        
+        fallback_model = ChatOpenAI(model="gpt-4o", temperature=0.1)
+        
+        system_prompt = f"""You are a precise datetime parser. Current date is {current_local.strftime('%A, %B %d, %Y')} in {DEFAULT_TIMEZONE} timezone.
+
+Parse the meeting request and return ONLY a datetime string in this exact format:
+"YYYY-MM-DD HH:MM"
+
+Rules:
+- Use 24-hour format for time
+- If year is not specified, assume current year ({current_local.year})
+- If "24th July" means July 24, {current_local.year}
+- "2 pm" = "14:00"
+- "2:30 pm" = "14:30"
+- "9 am" = "09:00"
+
+Example outputs:
+- "2025-07-24 14:00" for "24th July at 2 pm"
+- "2025-07-25 09:30" for "July 25 at 9:30 AM"
+
+Return ONLY the datetime string, nothing else."""
+
+        user_prompt = f"Parse this meeting request: {text}"
+
+        llm_response = fallback_model.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt)
+        ])
+
+        # Parse the GPT response
+        datetime_str = llm_response.content.strip().strip('"\'')
+        print(f"🤖 GPT parsed datetime: {datetime_str}")
+        
+        # Parse the standardized format
+        try:
+            parsed_dt = datetime.datetime.strptime(datetime_str, "%Y-%m-%d %H:%M")
+            # Make timezone aware
+            if parsed_dt.tzinfo is None:
+                parsed_dt = tz_obj.localize(parsed_dt)
+            
+            return parsed_dt
+            
+        except ValueError as ve:
+            print(f"❌ GPT response format error: {ve}")
+            # Try alternative parsing
+            guessed_datetime = dt_parser.parse(datetime_str)
+            if guessed_datetime.tzinfo is None:
+                guessed_datetime = tz_obj.localize(guessed_datetime)
+            return guessed_datetime
+
+    except Exception as e:
+        print(f"❌ GPT fallback parsing failed: {e}")
+        return None
+    
+def parse_datetime_components(date_str, time_str):
+    """Parse date and time components into datetime object with improved current year handling."""
+    try:
+        # Get timezone and current date
+        tz_obj = get_timezone_obj(DEFAULT_TIMEZONE)
+        current_year = datetime.now(tz_obj).year
         
         # Parse date
         if date_str.lower() == "today":
@@ -302,11 +398,24 @@ def parse_datetime_components(date_str, time_str):
             weekday = date_str.lower().replace("next ", "")
             base_date = get_next_weekday(weekday, tz_obj)
         elif any(month in date_str.lower() for month in ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']):
-            # Natural language date
-            base_date = dateutil.parser.parse(date_str).date()
+            # Natural language date - ensure current year if not specified
+            try:
+                parsed_date = dateutil.parser.parse(date_str)
+                # If no year was specified in the original string and parsed year is different, use current year
+                if str(current_year) not in date_str and parsed_date.year != current_year:
+                    parsed_date = parsed_date.replace(year=current_year)
+                base_date = parsed_date.date()
+            except:
+                # Fallback: add current year if parsing fails
+                date_with_year = f"{date_str} {current_year}"
+                base_date = dateutil.parser.parse(date_with_year).date()
         else:
             # Standard date format
-            base_date = dateutil.parser.parse(date_str).date()
+            parsed_date = dateutil.parser.parse(date_str)
+            # If parsed year seems wrong (like 2023 when we're in 2025), use current year
+            if parsed_date.year < current_year:
+                parsed_date = parsed_date.replace(year=current_year)
+            base_date = parsed_date.date()
         
         # Parse time
         time_str = time_str.lower().replace(" ", "")
@@ -335,6 +444,7 @@ def parse_datetime_components(date_str, time_str):
     except Exception as e:
         print(f"❌ DateTime parsing error: {e}")
         return None
+
 
 def get_next_weekday(weekday_name, tz_obj):
     """Get the date of the next occurrence of a weekday."""
@@ -365,7 +475,7 @@ def is_company_query(subject, body):
         'hr policy', 'hr policies', 'employee handbook', 'company handbook',
         'company guidelines', 'company rules', 'policy regarding', 'procedure for',
         'what is the policy', 'what are the policies', 'clarification on',
-        'guidance on', 'information about', 'details about'
+        'guidance on', 'information about', 'details about','policy', 'policies'
     ]
     
     # Check for strong indicators first
@@ -634,8 +744,13 @@ def create_calendar_event(title, start_datetime, attendee_email, duration_hours=
         print(f"❌ Calendar event creation failed: {e}")
         return False
     
+import os
+import smtplib
+import ssl
+from email.mime.text import MIMEText
+
 def send_email_html(to_email, subject, html_body):
-    """Send HTML-formatted email."""
+    """Send HTML-formatted email with secure TLS."""
     smtp_server = os.getenv("SMTP_SERVER")
     smtp_port = int(os.getenv("SMTP_PORT", 587))
     smtp_user = os.getenv("SMTP_USER")
@@ -646,21 +761,27 @@ def send_email_html(to_email, subject, html_body):
         return False
 
     try:
+        # Construct the email
         msg = MIMEText(html_body, "html")
         msg["Subject"] = subject
         msg["From"] = smtp_user
         msg["To"] = to_email
 
+        # Create secure SSL context with hostname verification
+        context = ssl.create_default_context()
+        context.check_hostname = True
+        context.verify_mode = ssl.CERT_REQUIRED
+
         with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls()
+            server.starttls(context=context)  # Secure upgrade
             server.login(smtp_user, smtp_password)
             server.sendmail(smtp_user, [to_email], msg.as_string())
 
-        print(f"✅ HTML Email sent to {to_email}")
+        print(f"✅  Email sent to {to_email}")
         return True
 
     except Exception as e:
-        print(f"❌ HTML Email sending failed: {e}")
+        print(f"❌  Email sending failed: {e}")
         return False
 
 
@@ -717,26 +838,54 @@ def extract_meeting_duration(subject, body):
     
     return 1  # Default 1 hour
 
+
+
+
+def validate_email_input(content: str) -> str:
+    """Sanitize and validate email body content."""
+    sanitized = html.escape(content)
+
+    blacklist_patterns = [
+        r"<script.*?>.*?</script>",
+        r"(?i)onerror\s*=",
+        r"(?i)<iframe.*?>",
+        r"(?i)<img.*?javascript:",
+        r"(?i)<.*?on\w+\s*="
+    ]
+    for pattern in blacklist_patterns:
+        if re.search(pattern, sanitized, re.IGNORECASE):
+            raise ValueError("❌ Malicious content detected in email body.")
+
+    if len(sanitized) > 5000:
+        raise ValueError("❌ Email content too long.")
+
+    return sanitized
+
+
 def process_email_smart(mail, email_id):
-    """Process email with improved classification logic."""
+    """Process email with classification, validation, and sanitization."""
     try:
         status, msg_data = mail.fetch(email_id, '(RFC822)')
         if status != 'OK':
             return
-        
+
         email_body = msg_data[0][1]
         email_message = email.message_from_bytes(email_body)
-        
-        # Extract email details
+
         subject = decode_header(email_message["Subject"])[0][0]
         if isinstance(subject, bytes):
             subject = subject.decode()
-        
+
         sender = email_message["From"]
         sender_email = parseaddr(sender)[1].lower()
         sender_name = extract_sender_name(sender)
-        
-        # Extract body
+
+        try:
+            validate_email(sender_email)
+        except EmailNotValidError:
+            print(f"❌ Invalid sender email: {sender_email}")
+            return
+
         body = ""
         if email_message.is_multipart():
             for part in email_message.walk():
@@ -745,30 +894,36 @@ def process_email_smart(mail, email_id):
                     break
         else:
             body = email_message.get_payload(decode=True).decode('utf-8', errors='ignore')
-        
+
         body = body.strip()
-        
+
+        try:
+            body = validate_email_input(body)
+        except ValueError as ve:
+            print(str(ve))
+            return
+
         print(f"\n📨 Processing email:")
         print(f"From: {sender_name} <{sender_email}>")
         print(f"Subject: {subject}")
-        print(f"Body preview: {body[:100]}...")  # Debug: show body preview
-        
-        # Classify email type using improved logic
+        print(f"Body preview: {body[:100]}...")
+
         email_type = classify_email_type(subject, body)
-        
+
         if email_type == "company_query":
             print("🏢 Detected: Company query")
             handle_company_query(sender_email, sender_name, subject, body)
-            
+
         elif email_type == "calendar_request":
             print("📅 Detected: Calendar/Meeting request")
             handle_calendar_request(sender_email, sender_name, subject, body)
-            
+
         else:
             print("📝 Detected: General email (no auto-response)")
-        
+
     except Exception as e:
         print(f"❌ Email processing error: {e}")
+
 
 def handle_calendar_request(sender_email, sender_name, subject, body):
     """Handle calendar/meeting requests with proper time parsing."""
